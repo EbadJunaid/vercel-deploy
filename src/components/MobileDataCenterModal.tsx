@@ -191,7 +191,7 @@ export function MobileDataCenterModal({ dataCenter, isOpen, onClose }: MobileDat
                         {/* Subnets */}
                         <div className="flex items-center justify-between py-3">
                           <span className="text-slate-300 text-sm">Subnets</span>
-                          <span className="text-white font-bold text-lg">{dc.subnets || 0}</span>
+                          <span className="text-white font-bold text-lg">{dc.subnets ? dc.subnets.length : 0}</span>
                         </div>
                       </div>
                     )}

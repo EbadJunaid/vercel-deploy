@@ -203,6 +203,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
 
       canvas.addEventListener("webglcontextrestored", () => {
         console.info("[EARTH] WebGL context restored")
+        console.log("I am here");
         // Attempt to recover
         setTimeout(() => {
           recoverWebGLContext()
