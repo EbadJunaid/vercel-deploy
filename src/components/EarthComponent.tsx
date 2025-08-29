@@ -200,6 +200,8 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
           popup.style.display = "none"
           popup.classList.remove("visible")
         }
+
+        console.log("coming out of the function");
       })
 
       canvas.addEventListener("webglcontextrestored", () => {
