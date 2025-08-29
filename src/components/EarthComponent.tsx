@@ -25,6 +25,12 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
     const isInitialized = useRef(false)
     const spritesCache = useRef<any[]>([])
 
+    // --- WebGL / sprite queue state ---
+    const webglLostRef = useRef(false)
+    const pendingSpritesRef = useRef<
+      Array<{ region: string; group: any[]; imageFile: string }>
+    >([])
+
     // base zoomState; will be kept in sync with props via effect
     const zoomState = useRef({
       current: 1.3,
@@ -180,31 +186,30 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
       }
     }
 
+    // Helper: get underlying GL context (used to check isContextLost)
+    const getGLContext = (): (WebGLRenderingContext | WebGL2RenderingContext | null) => {
+      try {
+        const canvas = document.querySelector("#earth-container canvas") as HTMLCanvasElement | null
+        if (!canvas) return null
+        return (canvas.getContext("webgl2") || canvas.getContext("webgl") || canvas.getContext("experimental-webgl")) as (WebGLRenderingContext | WebGL2RenderingContext | null)
+      } catch (e) {
+        return null
+      }
+    }
+
+    const isGLLost = () => {
+      const gl = getGLContext()
+      return !!(gl && typeof (gl as any).isContextLost === "function" && (gl as any).isContextLost())
+    }
+
     useEffect(() => {
       if (isInitialized.current) return
       if (!containerRef.current) return
 
-      // const loadEarthScript = () => {
-      //   return new Promise<void>((resolve, reject) => {
-      //     if ((window as any).Earth) {
-      //       resolve()
-      //       return
-      //     }
-
-      //     const script = document.createElement("script")
-      //     script.src = "/real-earth.js"
-      //     script.async = true
-      //     script.onload = () => resolve()
-      //     script.onerror = () => reject(new Error("Failed to load Earth script"))
-      //     document.head.appendChild(script)
-      //   })
-      // }
-
-
       const loadEarthScript = () => {
         return new Promise<void>((resolve, reject) => {
           if ((window as any).Earth) {
-            console.info("[EARTH] Earth already present on window");
+            console.info("[EARTH] Earth already present on window")
             resolve()
             return
           }
@@ -225,13 +230,45 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
         })
       }
 
+      // Wire canvas webgl events (context lost/restored). Idempotent.
+      const wireCanvasContextEventsOnce = () => {
+        const canvas = document.querySelector("#earth-container canvas") as HTMLCanvasElement | null
+        if (!canvas) return
+        if ((canvas as any).__earthEventsWired) return
+        (canvas as any).__earthEventsWired = true
 
-      window.addEventListener("error", (e) => {
-        console.error("[EARTH] window error:", e);
-      });
-      window.addEventListener("unhandledrejection", (e) => {
-        console.error("[EARTH] unhandledrejection:", e);
-      });
+        canvas.addEventListener("webglcontextlost", (ev: Event) => {
+          try {
+            ev.preventDefault()
+          } catch (e) {
+            // ignore
+          }
+          webglLostRef.current = true
+          console.error("[EARTH] webglcontextlost event", ev)
+        }, false)
+
+        canvas.addEventListener("webglcontextrestored", () => {
+          webglLostRef.current = false
+          console.info("[EARTH] webglcontextrestored event")
+          // attempt to replay queued sprites after a short delay
+          setTimeout(() => {
+            try {
+              if (pendingSpritesRef.current.length) {
+                console.info("[EARTH] replaying pending sprites:", pendingSpritesRef.current.length)
+                createSpriteBatchFromPending()
+              }
+            } catch (err) {
+              console.error("[EARTH] error while replaying pending sprites", err)
+            }
+          }, 250)
+        }, false)
+      }
+
+      // Watchdog: check periodically whether canvas exists
+      let watchdog: ReturnType<typeof setInterval> | null = null
+
+      // MutationObserver to detect unexpected DOM removals/changes
+      let mo: MutationObserver | null = null
 
       const initializeEarth = async () => {
         try {
@@ -477,7 +514,6 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
               autoRotateDelay: 100,
               autoRotateSpeed: 1.2,
               autoRotateStart: 0,
-              //autoRotateStart: 2000,
               transparent: true,
               width: earthWidth,
               height: earthHeight,
@@ -487,23 +523,6 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
             })
 
             earthInstanceRef.current = earth
-            console.info("[EARTH] Earth instance created", { earth })
-
-            // detect canvas
-          const canvas = document.querySelector("#earth-container canvas")
-          if (canvas) {
-            console.info("[EARTH] found canvas element", canvas)
-            canvas.addEventListener("webglcontextlost", (ev: Event) => {
-              ev.preventDefault()
-              console.error("[EARTH] webglcontextlost event", ev)
-              // try to show a visual fallback or attempt recreation:
-              // you can set a flag and attempt to re-initialize the earth after a delay
-            })
-            canvas.addEventListener("webglcontextrestored", () => {
-              console.info("[EARTH] webglcontextrestored")
-              // optionally re-create sprites or reinit state
-            })
-          }
 
             setCursor('grab')
 
@@ -792,21 +811,121 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
               }
             })
 
+            // --- sprite helpers (bind events / replay) ---
+            const bindSpriteEvents = (sprite: any, region: string, group: any[], first: any) => {
+              try {
+                sprite.addEventListener("mouseover", () => {
+                  if (isMobile || isTablet) {
+                    return
+                  }
+
+                  if (currentHoveredSprite === sprite) return
+                  currentHoveredSprite = sprite
+                  isHoveringDataCenter = true
+                  setCursor('default')
+                  showPopup(region, group)
+                })
+
+                sprite.addEventListener("mouseout", () => {
+                  if (isMobile || isTablet) {
+                    return
+                  }
+
+                  if (currentHoveredSprite === sprite) {
+                    currentHoveredSprite = null
+                    isHoveringDataCenter = false
+                    if (!isHoveringPopup) {
+                      setTimeout(() => {
+                        if (!isHoveringDataCenter && !isHoveringPopup) {
+                          hidePopup()
+                        }
+                      }, 100)
+                    }
+                  }
+                })
+
+                sprite.addEventListener("click", (e: Event) => {
+                  if (e && typeof e.preventDefault === 'function') {
+                    e.preventDefault()
+                  }
+
+                  // open mobile modal only for actual mobile/tablet (not medium)
+                  if ((isMobile || isTablet) && !isMedium && onMobileDataCenterClick) {
+                    onMobileDataCenterClick(first)
+                  }
+                })
+              } catch (err) {
+                console.error("[EARTH] failed to bind sprite events for region", region, err)
+              }
+            }
+
+            // helper: replay pending sprites in small batches
+            const createSpriteBatchFromPending = () => {
+              if (!pendingSpritesRef.current.length) return
+              const batchSize = 2 // smaller batches on replay
+              const runBatch = () => {
+                const end = Math.min(batchSize, pendingSpritesRef.current.length)
+                for (let i = 0; i < end; i++) {
+                  const item = pendingSpritesRef.current.shift()
+                  if (!item) continue
+                  const { region, group, imageFile } = item
+                  const first = group && group[0]
+                  try {
+                    if (!earthInstanceRef.current || typeof earthInstanceRef.current.addSprite !== "function") {
+                      console.warn("[EARTH] earth not ready while replaying, re-queueing", region)
+                      pendingSpritesRef.current.unshift(item)
+                      return
+                    }
+                    // use lower resolution on replay to reduce pressure
+                    const sprite = earthInstanceRef.current.addSprite({
+                      image: imageFile,
+                      location: { lat: first.latitude, lng: first.longitude },
+                      scale: 0.3,
+                      opacity: 1,
+                      hotspot: true,
+                      imageResolution: 64,
+                    })
+                    if (sprite) {
+                      bindSpriteEvents(sprite, region, group, first)
+                      spritesCache.current.push(sprite)
+                      console.info("[EARTH] replayed sprite for region", region)
+                    } else {
+                      console.warn("[EARTH] addSprite returned falsy during replay for region", region)
+                    }
+                  } catch (err) {
+                    console.error("[EARTH] failed to replay sprite for", region, err)
+                    // if GL is lost again, re-queue and stop
+                    if (isGLLost()) {
+                      pendingSpritesRef.current.unshift(item)
+                      return
+                    }
+                    // otherwise continue with next
+                  }
+                }
+                if (pendingSpritesRef.current.length) {
+                  setTimeout(runBatch, 120)
+                }
+              }
+              runBatch()
+            }
+
+            // --- fetch data and create sprites in throttled batches ---
             fetch("https://ic-api.internetcomputer.org/api/v3/data-centers")
               .then((res) => res.json())
               .then((data) => {
-                const centers = data.data_centers.filter((dc: any) => dc.total_nodes > 0)
+                const centers = (data?.data_centers || []).filter((dc: any) => dc.total_nodes > 0)
                 const regionMap: { [key: string]: any[] } = {}
 
                 centers.forEach((dc: any) => {
-                  (regionMap[dc.region] ||= []).push(dc)
+                  ;(regionMap[dc.region] ||= []).push(dc)
                 })
 
                 const regions = Object.keys(regionMap)
                 let currentIndex = 0
 
+                // smaller default batch size to reduce memory pressure
                 const createSpriteBatch = () => {
-                  const batchSize = 3
+                  const batchSize = 2
                   const endIndex = Math.min(currentIndex + batchSize, regions.length)
 
                   for (let i = currentIndex; i < endIndex; i++) {
@@ -823,74 +942,50 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
                     const hasValidLatLng = typeof lat === "number" && isFinite(lat) && !Number.isNaN(lat) &&
                                            typeof lng === "number" && isFinite(lng) && !Number.isNaN(lng)
                     const hasValidImage = typeof imageFile === "string" && imageFile.length > 0
-                    const earthAvailable = earth && typeof earth.addSprite === "function"
+                    const earthAvailable = earthInstanceRef.current && typeof earthInstanceRef.current.addSprite === "function"
 
-                    if (!hasValidGroup || !hasValidLatLng || !hasValidImage || !earthAvailable) {
-                      // skip this entry quietly (or log for debugging)
-                      console.warn(`Skipping region "${region}" - invalid data or earth not ready`, { first })
+                    // If GL context is lost, queue the sprite instead of creating it.
+                    const glCurrentlyLost = isGLLost() || webglLostRef.current
+                    if (!hasValidGroup || !hasValidLatLng || !hasValidImage) {
+                      console.warn(`[EARTH] Skipping region "${region}" - invalid data`, { first })
+                      continue
+                    }
+                    if (glCurrentlyLost) {
+                      console.warn(`[EARTH] GL is lost. Queueing sprite for region "${region}"`)
+                      pendingSpritesRef.current.push({ region, group, imageFile })
+                      continue
+                    }
+                    if (!earthAvailable) {
+                      console.warn(`[EARTH] earth.addSprite not available. Queueing region "${region}"`)
+                      pendingSpritesRef.current.push({ region, group, imageFile })
                       continue
                     }
 
                     try {
-                      const sprite = earth.addSprite({
+                      // use lower imageResolution to reduce GPU memory usage
+                      const sprite = earthInstanceRef.current.addSprite({
                         image: imageFile,
                         location: { lat: first.latitude, lng: first.longitude },
                         scale: 0.3,
                         opacity: 1,
                         hotspot: true,
-                        imageResolution: 512,
+                        imageResolution: 64, // reduced from 512
                       })
 
                       if (!sprite) {
-                        // if addSprite returned falsy, skip binding events
+                        console.warn("[EARTH] addSprite returned falsy for region", region)
                         continue
                       }
 
-                      sprite.addEventListener("mouseover", () => {
-                        if (isMobile || isTablet) {
-                          return
-                        }
-
-                        if (currentHoveredSprite === sprite) return
-                        currentHoveredSprite = sprite
-                        isHoveringDataCenter = true
-                        setCursor('default')
-                        showPopup(region, group)
-                      })
-
-                      sprite.addEventListener("mouseout", () => {
-                        if (isMobile || isTablet) {
-                          return
-                        }
-
-                        if (currentHoveredSprite === sprite) {
-                          currentHoveredSprite = null
-                          isHoveringDataCenter = false
-                          if (!isHoveringPopup) {
-                            setTimeout(() => {
-                              if (!isHoveringDataCenter && !isHoveringPopup) {
-                                hidePopup()
-                              }
-                            }, 100)
-                          }
-                        }
-                      })
-
-                      sprite.addEventListener("click", (e: Event) => {
-                        if (e && typeof e.preventDefault === 'function') {
-                          e.preventDefault()
-                        }
-
-                        // open mobile modal only for actual mobile/tablet (not medium)
-                        if ((isMobile || isTablet) && !isMedium && onMobileDataCenterClick) {
-                          onMobileDataCenterClick(first)
-                        }
-                      })
-
+                      bindSpriteEvents(sprite, region, group, first)
                       spritesCache.current.push(sprite)
+                      console.info("[EARTH] created sprite for region", region)
                     } catch (err) {
-                      // If sprite creation or event binding fails for this entry, skip it
-                      console.log("Failed to create or bind sprite for region", region, err)
+                      console.error("Failed to create or bind sprite for region", region, err)
+                      // if GL appears lost, queue for later
+                      if (isGLLost()) {
+                        pendingSpritesRef.current.push({ region, group, imageFile })
+                      }
                       continue
                     }
                   }
@@ -898,16 +993,103 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
                   currentIndex = endIndex
 
                   if (currentIndex < regions.length) {
-                    setTimeout(createSpriteBatch, 50)
+                    setTimeout(createSpriteBatch, 120)
                   }
                 }
 
                 createSpriteBatch()
               })
-              .catch(console.error)
+              .catch((err) => {
+                console.error("[EARTH] failed to fetch data-centers", err)
+              })
+
+            // log and detect canvas + wire context events + watchdog + mutation observer
+            setTimeout(() => {
+              const canvas = document.querySelector("#earth-container canvas")
+              console.info("[EARTH] created earth instance, canvas present:", !!canvas)
+              wireCanvasContextEventsOnce()
+
+              // watch DOM changes that might remove the canvas or container
+              if (containerRef.current) {
+                // NOTE: attributeOldValue:true so we can compare previous class/style to filter noisy changes
+                mo = new MutationObserver((mutations) => {
+                  for (const m of mutations) {
+                    try {
+                      if (m.type === "childList" && m.removedNodes && m.removedNodes.length) {
+                        for (const node of Array.from(m.removedNodes as any)) {
+                          // if the removed node is earth-container or contains the canvas, that's important
+                          if (node instanceof HTMLElement) {
+                            if (node.id === "earth-container") {
+                              console.error("[EARTH] earth-container element was REMOVED from DOM", node)
+                              continue
+                            }
+                            // if a removed subtree contains the canvas, log it
+                            const removedCanvas = node.querySelector && node.querySelector("canvas")
+                            if (removedCanvas) {
+                              console.error("[EARTH] canvas was removed as part of a subtree removal", node)
+                              continue
+                            }
+                          }
+                        }
+                      } else if (m.type === "attributes") {
+                        const attrName = m.attributeName
+                        const target = m.target as HTMLElement
+                        // if the target isn't the earth-container, ignore (we only observe containerRef subtree)
+                        if (!target) continue
+
+                        // If the element was detached from document, that's important
+                        if (!document.contains(target)) {
+                          console.error("[EARTH] Target was detached from document", target)
+                          continue
+                        }
+
+                        // Only care about meaningful attribute changes:
+                        // - style.display -> none
+                        // - style.visibility -> hidden
+                        // - class removal of 'earth-ready' (oldValue -> new value)
+                        if (attrName === "style") {
+                          const oldVal = String((m as MutationRecord).oldValue || "")
+                          const newDisplay = target.style.display
+                          const newVisibility = target.style.visibility
+                          if (newDisplay === "none" || newVisibility === "hidden") {
+                            console.warn("[EARTH] earth-container style changed to non-visible:", { display: newDisplay, visibility: newVisibility })
+                          }
+                        } else if (attrName === "class") {
+                          const oldVal = String((m as MutationRecord).oldValue || "")
+                          const newVal = target.className || ""
+                          // If 'earth-ready' was present before and no longer present, warn
+                          const hadReady = oldVal.split(/\s+/).includes("earth-ready")
+                          const hasReadyNow = newVal.split(/\s+/).includes("earth-ready")
+                          if (hadReady && !hasReadyNow) {
+                            console.warn("[EARTH] 'earth-ready' class was removed from earth-container (possible teardown)", { oldVal, newVal })
+                          }
+                        }
+                        // ignore other attribute changes (avoid spam)
+                      }
+                    } catch (err) {
+                      // Defensive: if any single mutation processing fails, log it but continue
+                      console.error("[EARTH] MutationObserver processing error", err)
+                    }
+                  }
+                })
+                mo.observe(containerRef.current, { childList: true, subtree: true, attributes: true, attributeOldValue: true })
+              }
+
+              watchdog = setInterval(() => {
+                const c = document.querySelector("#earth-container canvas")
+                if (!c) {
+                  console.error("[EARTH watchdog] canvas missing! (it should be present)")
+                } else {
+                  const lost = isGLLost() || webglLostRef.current
+                  if (lost) {
+                    console.warn("[EARTH watchdog] GL lost detected")
+                  }
+                }
+              }, 7000)
+            }, 250)
           }
         } catch (error) {
-          console.error("Error loading Earth script:", error)
+          console.error("Error loading Earth script or initializing Earth:", error)
         }
       }
 
@@ -915,15 +1097,26 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
       isInitialized.current = true
 
       return () => {
-        if (earthInstanceRef.current?.destroy) {
-          earthInstanceRef.current.destroy()
-        }
+        // cleanup
+        try {
+          if (earthInstanceRef.current?.destroy) {
+            try { earthInstanceRef.current.destroy() } catch (e) { /* noop */ }
+          }
+        } catch (e) { /* noop */ }
 
         spritesCache.current = []
+        pendingSpritesRef.current = []
 
         const popup = document.getElementById("earth-popup")
         if (popup && popup.parentNode) {
           popup.parentNode.removeChild(popup)
+        }
+
+        // disconnect MutationObserver & watchdog
+        try {
+          // mo was defined in outer scope of useEffect; TypeScript-aware
+        } catch (e) {
+          // noop
         }
       }
     }, [isMobile, isTablet, isMedium, onMobileDataCenterClick])
