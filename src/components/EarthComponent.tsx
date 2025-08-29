@@ -206,7 +206,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
         // Attempt to recover
         setTimeout(() => {
           recoverWebGLContext()
-        }, 100)
+        }, 5000)
       })
     }, [])
 
