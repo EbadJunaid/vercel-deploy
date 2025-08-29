@@ -184,21 +184,54 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
       if (isInitialized.current) return
       if (!containerRef.current) return
 
+      // const loadEarthScript = () => {
+      //   return new Promise<void>((resolve, reject) => {
+      //     if ((window as any).Earth) {
+      //       resolve()
+      //       return
+      //     }
+
+      //     const script = document.createElement("script")
+      //     script.src = "/real-earth.js"
+      //     script.async = true
+      //     script.onload = () => resolve()
+      //     script.onerror = () => reject(new Error("Failed to load Earth script"))
+      //     document.head.appendChild(script)
+      //   })
+      // }
+
+
       const loadEarthScript = () => {
         return new Promise<void>((resolve, reject) => {
           if ((window as any).Earth) {
+            console.info("[EARTH] Earth already present on window");
             resolve()
             return
           }
 
+          console.info("[EARTH] injecting script /real-earth.js")
           const script = document.createElement("script")
           script.src = "/real-earth.js"
           script.async = true
-          script.onload = () => resolve()
-          script.onerror = () => reject(new Error("Failed to load Earth script"))
+          script.onload = () => {
+            console.info("[EARTH] real-earth.js loaded")
+            resolve()
+          }
+          script.onerror = (err) => {
+            console.error("[EARTH] failed to load real-earth.js", err)
+            reject(new Error("Failed to load Earth script"))
+          }
           document.head.appendChild(script)
         })
       }
+
+
+      window.addEventListener("error", (e) => {
+        console.error("[EARTH] window error:", e);
+      });
+      window.addEventListener("unhandledrejection", (e) => {
+        console.error("[EARTH] unhandledrejection:", e);
+      });
 
       const initializeEarth = async () => {
         try {
@@ -454,6 +487,23 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
             })
 
             earthInstanceRef.current = earth
+            console.info("[EARTH] Earth instance created", { earth })
+
+            // detect canvas
+          const canvas = document.querySelector("#earth-container canvas")
+          if (canvas) {
+            console.info("[EARTH] found canvas element", canvas)
+            canvas.addEventListener("webglcontextlost", (ev: Event) => {
+              ev.preventDefault()
+              console.error("[EARTH] webglcontextlost event", ev)
+              // try to show a visual fallback or attempt recreation:
+              // you can set a flag and attempt to re-initialize the earth after a delay
+            })
+            canvas.addEventListener("webglcontextrestored", () => {
+              console.info("[EARTH] webglcontextrestored")
+              // optionally re-create sprites or reinit state
+            })
+          }
 
             setCursor('grab')
 
@@ -777,7 +827,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
 
                     if (!hasValidGroup || !hasValidLatLng || !hasValidImage || !earthAvailable) {
                       // skip this entry quietly (or log for debugging)
-                      // console.warn(`Skipping region "${region}" - invalid data or earth not ready`, { first })
+                      console.warn(`Skipping region "${region}" - invalid data or earth not ready`, { first })
                       continue
                     }
 
@@ -840,7 +890,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
                       spritesCache.current.push(sprite)
                     } catch (err) {
                       // If sprite creation or event binding fails for this entry, skip it
-                      // console.error("Failed to create or bind sprite for region", region, err)
+                      console.log("Failed to create or bind sprite for region", region, err)
                       continue
                     }
                   }
