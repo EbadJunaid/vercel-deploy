@@ -2,7 +2,7 @@
 
 "use client"
 
-import { useEffect, useRef, useImperativeHandle, forwardRef } from "react"
+import { useEffect, useRef, useImperativeHandle, forwardRef, useCallback } from "react"
 
 interface EarthComponentProps {
   isMobile?: boolean
@@ -17,6 +17,17 @@ export interface EarthComponentRef {
   resetZoom: () => void
   getCurrentZoom: () => number
 }
+
+/**
+ * CONFIG:
+ * - By default the component loads /public/real-earth.js (REAL_EARTH_SCRIPT_SRC = "/real-earth.js")
+ * - If you want to move real-earth.js into `src/components/`:
+ *   * Convert it to an ES module that exports the Earth constructor (e.g. `export default Earth`)
+ *   * Then remove the dynamic script injection (loadEarthScript()) and import it:
+ *       import EarthLib from "../components/real-earth"
+ *     and create the instance via `const earth = new EarthLib("earth-container", {...})`
+ */
+const REAL_EARTH_SCRIPT_SRC = "/real-earth.js" // change this if you host elsewhere
 
 export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>(
   ({ isMobile, isTablet, isMedium, onMobileDataCenterClick }, ref) => {
@@ -187,20 +198,20 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
     }
 
     // Helper: get underlying GL context (used to check isContextLost)
-    const getGLContext = (): (WebGLRenderingContext | WebGL2RenderingContext | null) => {
+    const getGLContext = useCallback((): (WebGLRenderingContext | WebGL2RenderingContext | null) => {
       try {
         const canvas = document.querySelector("#earth-container canvas") as HTMLCanvasElement | null
         if (!canvas) return null
         return (canvas.getContext("webgl2") || canvas.getContext("webgl") || canvas.getContext("experimental-webgl")) as (WebGLRenderingContext | WebGL2RenderingContext | null)
-      } catch (e) {
+      } catch {
         return null
       }
-    }
+    }, [])
 
-    const isGLLost = () => {
+    const isGLLost = useCallback(() => {
       const gl = getGLContext()
       return !!(gl && typeof (gl as any).isContextLost === "function" && (gl as any).isContextLost())
-    }
+    }, [getGLContext])
 
     useEffect(() => {
       if (isInitialized.current) return
@@ -208,26 +219,77 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
 
       const loadEarthScript = () => {
         return new Promise<void>((resolve, reject) => {
+          // If you convert real-earth.js to an ES module and import it at top, skip this step.
           if ((window as any).Earth) {
             console.info("[EARTH] Earth already present on window")
             resolve()
             return
           }
 
-          console.info("[EARTH] injecting script /real-earth.js")
+          console.info("[EARTH] injecting script", REAL_EARTH_SCRIPT_SRC)
           const script = document.createElement("script")
-          script.src = "/real-earth.js"
+          script.src = REAL_EARTH_SCRIPT_SRC
           script.async = true
           script.onload = () => {
             console.info("[EARTH] real-earth.js loaded")
             resolve()
           }
-          script.onerror = (err) => {
-            console.error("[EARTH] failed to load real-earth.js", err)
+          script.onerror = () => {
+            console.error("[EARTH] failed to load real-earth.js")
             reject(new Error("Failed to load Earth script"))
           }
           document.head.appendChild(script)
         })
+      }
+
+      // --- function declaration before wireCanvasContextEventsOnce so it's available there ---
+      function createSpriteBatchFromPending() {
+        if (!pendingSpritesRef.current.length) return
+        const batchSize = 2 // smaller batches on replay
+        const runBatch = () => {
+          const end = Math.min(batchSize, pendingSpritesRef.current.length)
+          for (let i = 0; i < end; i++) {
+            const item = pendingSpritesRef.current.shift()
+            if (!item) continue
+            const { region, group, imageFile } = item
+            const first = group && group[0]
+            try {
+              if (!earthInstanceRef.current || typeof earthInstanceRef.current.addSprite !== "function") {
+                console.warn("[EARTH] earth not ready while replaying, re-queueing", region)
+                pendingSpritesRef.current.unshift(item)
+                return
+              }
+              // use lower resolution on replay to reduce pressure
+              const sprite = earthInstanceRef.current.addSprite({
+                image: imageFile,
+                location: { lat: first.latitude, lng: first.longitude },
+                scale: 0.3,
+                opacity: 1,
+                hotspot: true,
+                imageResolution: 64, // <<--- reduced for reliability
+              })
+              if (sprite) {
+                // minimal rebind if needed (you can re-bind full interactions here)
+                spritesCache.current.push(sprite)
+                console.info("[EARTH] replayed sprite for region", region)
+              } else {
+                console.warn("[EARTH] addSprite returned falsy during replay for region", region)
+              }
+            } catch (err) {
+              console.error("[EARTH] failed to replay sprite for", region, err)
+              // if GL is lost again, re-queue and stop
+              if (isGLLost()) {
+                pendingSpritesRef.current.unshift(item)
+                return
+              }
+              // otherwise continue with next
+            }
+          }
+          if (pendingSpritesRef.current.length) {
+            setTimeout(runBatch, 120)
+          }
+        }
+        runBatch()
       }
 
       // Wire canvas webgl events (context lost/restored). Idempotent.
@@ -240,7 +302,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
         canvas.addEventListener("webglcontextlost", (ev: Event) => {
           try {
             ev.preventDefault()
-          } catch (e) {
+          } catch {
             // ignore
           }
           webglLostRef.current = true
@@ -724,9 +786,9 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
                 popupContent.innerHTML = fullHtml
                 if (isMultiple) {
                   popupContent.querySelectorAll("[data-index]").forEach((el) => {
-                    el.addEventListener("click", (e) => {
-                      if (e && typeof e.stopPropagation === 'function') {
-                        e.stopPropagation()
+                    el.addEventListener("click", (ev) => {
+                      if (ev && typeof ev.stopPropagation === 'function') {
+                        ev.stopPropagation()
                       }
                       const index = Number.parseInt(el.getAttribute("data-index") || "0")
                       toggleDataCenter(index)
@@ -859,56 +921,6 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
               }
             }
 
-            // helper: replay pending sprites in small batches
-            const createSpriteBatchFromPending = () => {
-              if (!pendingSpritesRef.current.length) return
-              const batchSize = 2 // smaller batches on replay
-              const runBatch = () => {
-                const end = Math.min(batchSize, pendingSpritesRef.current.length)
-                for (let i = 0; i < end; i++) {
-                  const item = pendingSpritesRef.current.shift()
-                  if (!item) continue
-                  const { region, group, imageFile } = item
-                  const first = group && group[0]
-                  try {
-                    if (!earthInstanceRef.current || typeof earthInstanceRef.current.addSprite !== "function") {
-                      console.warn("[EARTH] earth not ready while replaying, re-queueing", region)
-                      pendingSpritesRef.current.unshift(item)
-                      return
-                    }
-                    // use lower resolution on replay to reduce pressure
-                    const sprite = earthInstanceRef.current.addSprite({
-                      image: imageFile,
-                      location: { lat: first.latitude, lng: first.longitude },
-                      scale: 0.3,
-                      opacity: 1,
-                      hotspot: true,
-                      imageResolution: 64,
-                    })
-                    if (sprite) {
-                      bindSpriteEvents(sprite, region, group, first)
-                      spritesCache.current.push(sprite)
-                      console.info("[EARTH] replayed sprite for region", region)
-                    } else {
-                      console.warn("[EARTH] addSprite returned falsy during replay for region", region)
-                    }
-                  } catch (err) {
-                    console.error("[EARTH] failed to replay sprite for", region, err)
-                    // if GL is lost again, re-queue and stop
-                    if (isGLLost()) {
-                      pendingSpritesRef.current.unshift(item)
-                      return
-                    }
-                    // otherwise continue with next
-                  }
-                }
-                if (pendingSpritesRef.current.length) {
-                  setTimeout(runBatch, 120)
-                }
-              }
-              runBatch()
-            }
-
             // --- fetch data and create sprites in throttled batches ---
             fetch("https://ic-api.internetcomputer.org/api/v3/data-centers")
               .then((res) => res.json())
@@ -969,7 +981,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
                         scale: 0.3,
                         opacity: 1,
                         hotspot: true,
-                        imageResolution: 64, // reduced from 512
+                        imageResolution: 64, // <<--- reduced for reliability
                       })
 
                       if (!sprite) {
@@ -1048,20 +1060,18 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
                         // - style.visibility -> hidden
                         // - class removal of 'earth-ready' (oldValue -> new value)
                         if (attrName === "style") {
-                          const oldVal = String((m as MutationRecord).oldValue || "")
                           const newDisplay = target.style.display
                           const newVisibility = target.style.visibility
                           if (newDisplay === "none" || newVisibility === "hidden") {
                             console.warn("[EARTH] earth-container style changed to non-visible:", { display: newDisplay, visibility: newVisibility })
                           }
                         } else if (attrName === "class") {
-                          const oldVal = String((m as MutationRecord).oldValue || "")
                           const newVal = target.className || ""
                           // If 'earth-ready' was present before and no longer present, warn
-                          const hadReady = oldVal.split(/\s+/).includes("earth-ready")
+                          const hadReady = (m as MutationRecord).oldValue?.split(/\s+/).includes("earth-ready")
                           const hasReadyNow = newVal.split(/\s+/).includes("earth-ready")
                           if (hadReady && !hasReadyNow) {
-                            console.warn("[EARTH] 'earth-ready' class was removed from earth-container (possible teardown)", { oldVal, newVal })
+                            console.warn("[EARTH] 'earth-ready' class was removed from earth-container (possible teardown)", { old: (m as MutationRecord).oldValue, new: newVal })
                           }
                         }
                         // ignore other attribute changes (avoid spam)
@@ -1100,9 +1110,9 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
         // cleanup
         try {
           if (earthInstanceRef.current?.destroy) {
-            try { earthInstanceRef.current.destroy() } catch (e) { /* noop */ }
+            try { earthInstanceRef.current.destroy() } catch { /* noop */ }
           }
-        } catch (e) { /* noop */ }
+        } catch { /* noop */ }
 
         spritesCache.current = []
         pendingSpritesRef.current = []
@@ -1114,12 +1124,13 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
 
         // disconnect MutationObserver & watchdog
         try {
-          // mo was defined in outer scope of useEffect; TypeScript-aware
-        } catch (e) {
-          // noop
-        }
+          if (mo) mo.disconnect()
+        } catch { /* noop */ }
+        try {
+          if (watchdog) clearInterval(watchdog)
+        } catch { /* noop */ }
       }
-    }, [isMobile, isTablet, isMedium, onMobileDataCenterClick])
+    }, [isMobile, isTablet, isMedium, onMobileDataCenterClick, isGLLost])
 
     return (
       <div
