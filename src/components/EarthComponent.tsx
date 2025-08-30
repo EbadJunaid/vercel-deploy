@@ -895,7 +895,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
 
           const earth = new (window as any).Earth("earth-container", {
             mapImage: "real-hologram.svg",
-            quality: 3,
+            quality: 4,
             light: "none",
             autoRotate: true,
             autoRotateDelay: 100,
@@ -943,6 +943,10 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
           // Setup popup functionality
           setupPopupFunctionality(popup)
 
+          await new Promise((r) => setTimeout(r, 2000))
+
+
+
           // Load data centers and create sprites — await both fetch and sprite creation
           if (dataCentersData.current.length > 0) {
             // Use cached data
@@ -953,6 +957,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
             try {
               const res = await fetch("https://ic-api.internetcomputer.org/api/v3/data-centers")
               const data = await res.json()
+              console.log("using API data");
               const centers = data.data_centers.filter((dc: any) => dc.total_nodes > 0)
               dataCentersData.current = centers
               await createSprites(earth, centers)
@@ -994,9 +999,10 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
         // Wait a small moment (helps some browsers recover resources)
         await new Promise((r) => setTimeout(r, 200))
 
+        console.log("hello");
         // Recreate the earth instance and await until sprites & fetches finish
         await initializeEarth()
-
+        console.log("hope");
         console.info("[EARTH] WebGL context recovery successful")
       } catch (error) {
         console.error("[EARTH] WebGL context recovery failed:", error)
