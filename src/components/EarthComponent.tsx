@@ -192,7 +192,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
 
     const setupWebGLContextHandlers = useCallback((canvas: HTMLCanvasElement) => {
       canvas.addEventListener("webglcontextlost", (ev: Event) => {
-        ev.preventDefault()
+        // Do not preventDefault to avoid waiting for a restore that may not happen
         console.error("[EARTH] WebGL context lost event", ev)
         console.log("shit issue has come ");
         // Hide any visible popups
@@ -203,6 +203,12 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
         }
 
         console.log("coming out of the function");
+        // Immediately attempt recovery since restore may not fire
+        setTimeout(() => {
+          recoverWebGLContext()
+        }, 5000)
+
+        console.log("strating recovery");
       })
 
       canvas.addEventListener("webglcontextrestored", () => {
@@ -211,7 +217,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
         // Attempt to recover
         setTimeout(() => {
           recoverWebGLContext()
-        }, 5000)
+        }, 100)
       })
     }, [])
 
