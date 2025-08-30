@@ -618,6 +618,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
         }
       }
 
+      console.log("now it's time to go in sprite batch");
       createSpriteBatch()
     }, [isMobile, isTablet, isMedium, onMobileDataCenterClick])
 
@@ -645,7 +646,6 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
 
         // Recreate the earth instance
         await initializeEarth()
-        isInitialized.current = true
         
         console.info("[EARTH] WebGL context recovery successful")
       } catch (error) {
