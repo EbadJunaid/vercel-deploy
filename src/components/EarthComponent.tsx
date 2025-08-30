@@ -525,7 +525,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
 
     const createSprites = useCallback((earth: any, centers: any[]) => {
       if (!earth || !centers || centers.length === 0 || !popupFunctionsRef.current) return
-
+      console.log("in sprite function man");
       const { showPopup, hidePopup } = popupFunctionsRef.current
 
       const regionMap: { [key: string]: any[] } = {}
@@ -542,6 +542,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
         const batchSize = 5 // Increased batch size for better performance
         const endIndex = Math.min(currentIndex + batchSize, regions.length)
 
+        console.log("in batch sprite now");
         for (let i = currentIndex; i < endIndex; i++) {
           const region = regions[i]
           const group = regionMap[region]
@@ -567,7 +568,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
             const sprite = earth.addSprite({
               image: imageFile,
               location: { lat: first.latitude, lng: first.longitude },
-              scale: 0.25, // Slightly reduced scale for better performance
+              scale: 0.3, // Slightly reduced scale for better performance
               opacity: 1,
               hotspot: true,
               imageResolution: 32, // Reduced from 64 for better performance
@@ -644,6 +645,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
 
         // Recreate the earth instance
         await initializeEarth()
+        isInitialized.current = true
         
         console.info("[EARTH] WebGL context recovery successful")
       } catch (error) {
