@@ -4,6 +4,8 @@
 
 import { useEffect, useRef, useImperativeHandle, forwardRef, useCallback } from "react"
 
+let loadPromise: Promise<void> | null = null
+
 interface EarthComponentProps {
   isMobile?: boolean
   isTablet?: boolean
@@ -27,6 +29,10 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
     const isRecovering = useRef(false)
     const dataCentersData = useRef<any[]>([])
     const contextLostCount = useRef(0)
+    const popupFunctionsRef = useRef<{
+      showPopup: (region: string, group: any[]) => void
+      hidePopup: () => void
+    } | null>(null)
     const maxRecoveryAttempts = 3
 
     // base zoomState; will be kept in sync with props via effect
@@ -184,95 +190,343 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
       }
     }
 
-    // WebGL context recovery function
-    const recoverWebGLContext = useCallback(async () => {
-      if (isRecovering.current || contextLostCount.current >= maxRecoveryAttempts) {
-        console.warn("[EARTH] Max recovery attempts reached or already recovering")
-        return
-      }
-
-      isRecovering.current = true
-      contextLostCount.current++
-      console.info(`[EARTH] Attempting WebGL context recovery (attempt ${contextLostCount.current})`)
-
-      try {
-        // Clear existing instance
-        if (earthInstanceRef.current) {
-          try {
-            if (earthInstanceRef.current.destroy) {
-              earthInstanceRef.current.destroy()
-            }
-          } catch (err) {
-            console.warn("[EARTH] Error destroying earth instance during recovery:", err)
-          }
-          earthInstanceRef.current = null
-        }
-
-        // Clear sprites cache
-        spritesCache.current = []
-
-        // Wait a bit before recreating
-        await new Promise(resolve => setTimeout(resolve, 1000))
-
-        // Recreate the earth instance
-        await initializeEarth()
-        
-        console.info("[EARTH] WebGL context recovery successful")
-      } catch (error) {
-        console.error("[EARTH] WebGL context recovery failed:", error)
-      } finally {
-        isRecovering.current = false
-      }
-    }, [])
-
-    const setupWebGLContextHandlers = (canvas: HTMLCanvasElement) => {
+    const setupWebGLContextHandlers = useCallback((canvas: HTMLCanvasElement) => {
       canvas.addEventListener("webglcontextlost", (ev: Event) => {
-        ev.preventDefault()
+        // Do not preventDefault to avoid waiting for a restore that may not happen
         console.error("[EARTH] WebGL context lost event", ev)
-        
+        console.log("shit issue has come ");
         // Hide any visible popups
         const popup = document.getElementById("earth-popup")
         if (popup) {
           popup.style.display = "none"
           popup.classList.remove("visible")
         }
+
+        console.log("coming out of the function");
+        // Immediately attempt recovery since restore may not fire
+        setTimeout(() => {
+          recoverWebGLContext()
+        }, 100)
       })
 
       canvas.addEventListener("webglcontextrestored", () => {
+        console.log("in restore func");
         console.info("[EARTH] WebGL context restored")
         // Attempt to recover
         setTimeout(() => {
           recoverWebGLContext()
         }, 100)
       })
-    }
+    }, [])
 
     const loadEarthScript = () => {
-      return new Promise<void>((resolve, reject) => {
-        if ((window as any).Earth) {
-          console.info("[EARTH] Earth already present on window")
-          resolve()
-          return
-        }
+      if ((window as any).Earth) {
+        console.info("[EARTH] Earth already present on window")
+        return Promise.resolve()
+      }
 
+      if (!loadPromise) {
         console.info("[EARTH] injecting script /real-earth.js")
-        const script = document.createElement("script")
-        script.src = "/real-earth.js"
-        script.async = true
-        script.onload = () => {
-          console.info("[EARTH] real-earth.js loaded")
-          resolve()
-        }
-        script.onerror = (err) => {
-          console.error("[EARTH] failed to load real-earth.js", err)
-          reject(new Error("Failed to load Earth script"))
-        }
-        document.head.appendChild(script)
-      })
+        loadPromise = new Promise((resolve, reject) => {
+          const script = document.createElement("script")
+          script.src = "/real-earth.js"
+          script.async = true
+          script.onload = () => {
+            console.info("[EARTH] real-earth.js loaded")
+            resolve()
+          }
+          script.onerror = (err) => {
+            console.error("[EARTH] failed to load real-earth.js", err)
+            reject(new Error("Failed to load Earth script"))
+            loadPromise = null // Allow retry on error
+          }
+          document.head.appendChild(script)
+        })
+      }
+
+      return loadPromise
     }
 
+    // Popup functionality setup
+    const setupPopupFunctionality = useCallback((popup: HTMLElement) => {
+      const popupContent = popup.querySelector(".popup-content")
+      let currentGroupData: any[] = []
+      let currentExpandedIndex = 0
+      let isVisible = false
+      let hideTimer: NodeJS.Timeout | null = null
+      let mouseX = 0
+      let mouseY = 0
+      let popupPositioned = false
+      let isHoveringPopup = false
+      let isHoveringDataCenter = false
+
+      function positionPopup() {
+        if (!containerRef.current) return
+        const earthBounds = containerRef.current.getBoundingClientRect()
+        const { left, top } = calculateSmartPopupPosition(mouseX, mouseY, earthBounds)
+        popup.style.left = `${left}px`
+        popup.style.top = `${top}px`
+        popupPositioned = true
+      }
+
+      function showPopup(region: string, group: any[]) {
+        if (isRecovering.current) return
+        
+        if (hideTimer) {
+          clearTimeout(hideTimer)
+          hideTimer = null
+        }
+
+        currentGroupData = group
+        currentExpandedIndex = 0
+        isVisible = true
+        popupPositioned = false
+        popup.style.display = "block"
+        popup.classList.add("visible")
+        renderPopupContent()
+        positionPopup()
+        disableEarthInteraction()
+      }
+
+      function hidePopup() {
+        if (hideTimer || isRecovering.current) return
+        hideTimer = setTimeout(() => {
+          isVisible = false
+          popup.style.display = "none"
+          popup.classList.remove("visible")
+          currentGroupData = []
+          currentExpandedIndex = -1
+          hideTimer = null
+          enableEarthInteraction()
+          setCursor('grab')
+        }, 150)
+      }
+
+      function renderPopupContent() {
+        if (!currentGroupData.length || !popupContent) return
+        const firstDC = currentGroupData[0]
+        const isMultiple = currentGroupData.length > 1
+
+        const countryCode = firstDC.region.split(",")[1]?.trim()?.toLowerCase() || "un"
+        const flagHtml = `<img src="https://flagcdn.com/w20/${countryCode}.png" alt="${countryCode} flag" onerror="this.style.display='none'; this.parentElement.innerHTML='🌍';" />`
+
+        const regionParts = firstDC.region.split(",")
+        const regionDisplay = regionParts.length >= 3
+          ? `${regionParts[0]},${regionParts[1]},${regionParts[2]}`
+          : firstDC.region
+
+        let bodyHtml = ""
+
+        if (isMultiple) {
+          bodyHtml = currentGroupData
+            .map((dc, index) => {
+              const isExpanded = index === currentExpandedIndex
+
+              if (isExpanded) {
+                return `
+                <div class="datacenter-item">
+                  <div class="datacenter-header" data-index="${index}">
+                    <div class="datacenter-name">${dc.name}</div>
+                    <div class="expand-icon expanded">▼</div>
+                  </div>
+                  <div class="datacenter-details expanded">
+                    <div class="detail-row">
+                      <span class="detail-label">Data Center ID</span>
+                      <span class="detail-value"><span class="detail-id">${dc.key}</span></span>
+                    </div>
+                    <div class="detail-row">
+                      <span class="detail-label">Data Center Owner</span>
+                      <span class="detail-value">${dc.owner}</span>
+                    </div>
+                    <div class="detail-row">
+                      <span class="detail-label">Replica Nodes</span>
+                      <span class="detail-value">${dc.total_replica_nodes || dc.total_nodes}</span>
+                    </div>
+                    <div class="detail-row">
+                      <span class="detail-label">API Boundary Nodes</span>
+                      <span class="detail-value">${dc.total_api_boundary_nodes || 0}</span>
+                    </div>
+                    <div class="detail-row">
+                      <span class="detail-label">Total Nodes</span>
+                      <span class="detail-value">${dc.total_nodes}</span>
+                    </div>
+                    <div class="detail-row">
+                      <span class="detail-label">Node Providers</span>
+                      <span class="detail-value">${dc.node_providers}</span>
+                    </div>
+                    <div class="detail-row">
+                      <span class="detail-label">Subnets</span>
+                      <span class="detail-value">${dc.subnets ? dc.subnets.length : 0}</span>
+                    </div>
+                  </div>
+                </div>
+              `
+              } else {
+                return `
+                <div class="collapsed-item" data-index="${index}">
+                  <div class="collapsed-name">${dc.name}</div>
+                  <svg class="collapsed-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path>
+                  </svg>
+                </div>
+              `
+              }
+            })
+            .join("")
+        } else {
+          const dc = firstDC
+          bodyHtml = `
+            <div class="datacenter-item">
+              <div class="datacenter-header">
+                <div class="datacenter-name">${dc.name}</div>
+                <div class="expand-icon expanded">▼</div>
+              </div>
+              <div class="datacenter-details expanded">
+                <div class="detail-row">
+                  <span class="detail-label">Data Center ID</span>
+                  <span class="detail-value"><span class="detail-id">${dc.key}</span></span>
+                </div>
+                <div class="detail-row">
+                  <span class="detail-label">Data Center Owner</span>
+                  <span class="detail-value">${dc.owner}</span>
+                </div>
+                <div class="detail-row">
+                  <span class="detail-label">Replica Nodes</span>
+                  <span class="detail-value">${dc.total_replica_nodes || dc.total_nodes}</span>
+                </div>
+                <div class="detail-row">
+                  <span class="detail-label">API Boundary Nodes</span>
+                  <span class="detail-value">${dc.total_api_boundary_nodes || 0}</span>
+                </div>
+                <div class="detail-row">
+                  <span class="detail-label">Total Nodes</span>
+                  <span class="detail-value">${dc.total_nodes}</span>
+                </div>
+                <div class="detail-row">
+                  <span class="detail-label">Node Providers</span>
+                  <span class="detail-value">${dc.node_providers}</span>
+                </div>
+                <div class="detail-row">
+                  <span class="detail-label">Subnets</span>
+                  <span class="detail-value">${dc.subnets ? dc.subnets.length : 0}</span>
+                </div>
+              </div>
+            </div>
+          `
+        }
+
+        const fullHtml = `
+          <div class="popup-header">
+            <div class="popup-flag">${flagHtml}</div>
+            <div class="popup-region">${regionDisplay}</div>
+          </div>
+          <div class="popup-body">${bodyHtml}</div>
+        `
+
+        if (popupContent) {
+          popupContent.innerHTML = fullHtml
+          if (isMultiple) {
+            popupContent.querySelectorAll("[data-index]").forEach((el) => {
+              el.addEventListener("click", (e) => {
+                if (e && typeof e.stopPropagation === 'function') {
+                  e.stopPropagation()
+                }
+                const index = Number.parseInt(el.getAttribute("data-index") || "0")
+                toggleDataCenter(index)
+              })
+            })
+          }
+        }
+      }
+
+      function toggleDataCenter(index: number) {
+        if (index === currentExpandedIndex) return
+        currentExpandedIndex = index
+        renderPopupContent()
+      }
+
+      // Mouse movement tracking
+      if (!isMobile && !isTablet && !isMedium) {
+        document.addEventListener("mousemove", (e) => {
+          mouseX = e.clientX
+          mouseY = e.clientY
+
+          if (isVisible && popup.style.display === "block" && !popupPositioned) {
+            requestAnimationFrame(() => {
+              positionPopup()
+            })
+          }
+        })
+      } else {
+        document.addEventListener("mousemove", (e) => {
+          mouseX = e.clientX
+          mouseY = e.clientY
+        })
+      }
+
+      popup.addEventListener("mouseenter", () => {
+        isHoveringPopup = true
+        if (hideTimer) {
+          clearTimeout(hideTimer)
+          hideTimer = null
+        }
+        setCursor('default')
+      })
+
+      popup.addEventListener("mouseleave", () => {
+        isHoveringPopup = false
+        hidePopup()
+      })
+
+      if (containerRef.current && !isMobile && !isTablet && !isMedium) {
+        containerRef.current.addEventListener("mouseleave", () => {
+          if (isVisible && !isHoveringPopup) {
+            isHoveringDataCenter = false
+            hidePopup()
+          }
+        })
+      }
+
+      if (!isMobile && !isTablet && !isMedium) {
+        document.addEventListener("mousemove", (e) => {
+          if (isVisible && !isHoveringPopup) {
+            const popupRect = popup.getBoundingClientRect()
+            const isOverPopup = (
+              e.clientX >= popupRect.left &&
+              e.clientX <= popupRect.right &&
+              e.clientY >= popupRect.top &&
+              e.clientY <= popupRect.bottom
+            )
+
+            if (!isOverPopup && !isHoveringDataCenter) {
+              hidePopup()
+            }
+          }
+        })
+      }
+
+      window.addEventListener("resize", () => {
+        if (isVisible && popup.style.display === "block") {
+          popupPositioned = false
+          requestAnimationFrame(() => {
+            positionPopup()
+          })
+        }
+      })
+
+      // Store popup functions in ref for external access
+      popupFunctionsRef.current = {
+        showPopup,
+        hidePopup
+      }
+
+      return { showPopup, hidePopup }
+    }, [isMobile, isTablet, isMedium])
+
     const createSprites = useCallback((earth: any, centers: any[]) => {
-      if (!earth || !centers || centers.length === 0) return
+      if (!earth || !centers || centers.length === 0 || !popupFunctionsRef.current) return
+      console.log("in sprite function man");
+      const { showPopup, hidePopup } = popupFunctionsRef.current
 
       const regionMap: { [key: string]: any[] } = {}
       centers.forEach((dc: any) => {
@@ -283,11 +537,13 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
       let currentIndex = 0
 
       const createSpriteBatch = () => {
+        console.log("recovering value now ",isRecovering.current);
         if (isRecovering.current) return // Don't create sprites during recovery
 
         const batchSize = 5 // Increased batch size for better performance
         const endIndex = Math.min(currentIndex + batchSize, regions.length)
 
+        console.log("in batch sprite now");
         for (let i = currentIndex; i < endIndex; i++) {
           const region = regions[i]
           const group = regionMap[region]
@@ -313,7 +569,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
             const sprite = earth.addSprite({
               image: imageFile,
               location: { lat: first.latitude, lng: first.longitude },
-              scale: 0.25, // Slightly reduced scale for better performance
+              scale: 0.3, // Slightly reduced scale for better performance
               opacity: 1,
               hotspot: true,
               imageResolution: 32, // Reduced from 64 for better performance
@@ -363,8 +619,43 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
         }
       }
 
+      console.log("now it's time to go in sprite batch");
       createSpriteBatch()
     }, [isMobile, isTablet, isMedium, onMobileDataCenterClick])
+
+    // WebGL context recovery function
+    const recoverWebGLContext = useCallback(async () => {
+      if (isRecovering.current || contextLostCount.current >= maxRecoveryAttempts) {
+        console.warn("[EARTH] Max recovery attempts reached or already recovering")
+        return
+      }
+
+      isRecovering.current = true
+      contextLostCount.current++
+      console.info(`[EARTH] Attempting WebGL context recovery (attempt ${contextLostCount.current})`)
+
+      try {
+        // Skip destroying the instance since context is already lost and destroy fails
+        // Instead, just nullify and proceed to recreate
+        earthInstanceRef.current = null
+
+        // Clear sprites cache
+        spritesCache.current = []
+
+        // Wait a bit before recreating
+        await new Promise(resolve => setTimeout(resolve, 2000))
+        isRecovering.current = false
+
+        // Recreate the earth instance
+        await initializeEarth()
+        
+        console.info("[EARTH] WebGL context recovery successful")
+      } catch (error) {
+        console.error("[EARTH] WebGL context recovery failed:", error)
+      } finally {
+        isRecovering.current = false
+      }
+    }, [])
 
     const initializeEarth = useCallback(async () => {
       if (!containerRef.current) return
@@ -615,7 +906,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
 
           const earth = new (window as any).Earth("earth-container", {
             mapImage: "real-hologram.svg",
-            quality: 2, // Reduced from 3 for better performance
+            quality: 4, // Reduced from 3 for better performance
             light: "none",
             autoRotate: true,
             autoRotateDelay: 100,
@@ -668,6 +959,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
           // Load data centers and create sprites
           if (dataCentersData.current.length > 0) {
             // Use cached data
+            console.log("using cached data");
             createSprites(earth, dataCentersData.current)
           } else {
             // Fetch data
@@ -685,279 +977,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
         console.error("Error initializing Earth:", error)
         isRecovering.current = false
       }
-    }, [isMobile, isTablet, isMedium, createSprites, recoverWebGLContext])
-
-    // Popup functionality (extracted to separate function for clarity)
-    const setupPopupFunctionality = (popup: HTMLElement) => {
-      const popupContent = popup.querySelector(".popup-content")
-      let currentGroupData: any[] = []
-      let currentExpandedIndex = 0
-      let isVisible = false
-      let hideTimer: NodeJS.Timeout | null = null
-      let mouseX = 0
-      let mouseY = 0
-      let popupPositioned = false
-      let isHoveringPopup = false
-      let isHoveringDataCenter = false
-
-      function positionPopup() {
-        if (!containerRef.current) return
-        const earthBounds = containerRef.current.getBoundingClientRect()
-        const { left, top } = calculateSmartPopupPosition(mouseX, mouseY, earthBounds)
-        popup.style.left = `${left}px`
-        popup.style.top = `${top}px`
-        popupPositioned = true
-      }
-
-      // Make these functions available globally for sprites
-      (window as any).showPopup = (region: string, group: any[]) => {
-        if (isRecovering.current) return
-        
-        if (hideTimer) {
-          clearTimeout(hideTimer)
-          hideTimer = null
-        }
-
-        currentGroupData = group
-        currentExpandedIndex = 0
-        isVisible = true
-        popupPositioned = false
-        popup.style.display = "block"
-        popup.classList.add("visible")
-        renderPopupContent()
-        positionPopup()
-        disableEarthInteraction()
-      };
-
-      (window as any).hidePopup = () => {
-        if (hideTimer || isRecovering.current) return
-        hideTimer = setTimeout(() => {
-          isVisible = false
-          popup.style.display = "none"
-          popup.classList.remove("visible")
-          currentGroupData = []
-          currentExpandedIndex = -1
-          hideTimer = null
-          enableEarthInteraction()
-          setCursor('grab')
-        }, 150)
-      }
-
-      const showPopup = (window as any).showPopup
-      const hidePopup = (window as any).hidePopup
-
-      function renderPopupContent() {
-        if (!currentGroupData.length || !popupContent) return
-        const firstDC = currentGroupData[0]
-        const isMultiple = currentGroupData.length > 1
-
-        const countryCode = firstDC.region.split(",")[1]?.trim()?.toLowerCase() || "un"
-        const flagHtml = `<img src="https://flagcdn.com/w20/${countryCode}.png" alt="${countryCode} flag" onerror="this.style.display='none'; this.parentElement.innerHTML='🌍';" />`
-
-        const regionParts = firstDC.region.split(",")
-        const regionDisplay = regionParts.length >= 3
-          ? `${regionParts[0]},${regionParts[1]},${regionParts[2]}`
-          : firstDC.region
-
-        let bodyHtml = ""
-
-        if (isMultiple) {
-          bodyHtml = currentGroupData
-            .map((dc, index) => {
-              const isExpanded = index === currentExpandedIndex
-
-              if (isExpanded) {
-                return `
-                <div class="datacenter-item">
-                  <div class="datacenter-header" data-index="${index}">
-                    <div class="datacenter-name">${dc.name}</div>
-                    <div class="expand-icon expanded">▼</div>
-                  </div>
-                  <div class="datacenter-details expanded">
-                    <div class="detail-row">
-                      <span class="detail-label">Data Center ID</span>
-                      <span class="detail-value"><span class="detail-id">${dc.key}</span></span>
-                    </div>
-                    <div class="detail-row">
-                      <span class="detail-label">Data Center Owner</span>
-                      <span class="detail-value">${dc.owner}</span>
-                    </div>
-                    <div class="detail-row">
-                      <span class="detail-label">Replica Nodes</span>
-                      <span class="detail-value">${dc.total_replica_nodes || dc.total_nodes}</span>
-                    </div>
-                    <div class="detail-row">
-                      <span class="detail-label">API Boundary Nodes</span>
-                      <span class="detail-value">${dc.total_api_boundary_nodes || 0}</span>
-                    </div>
-                    <div class="detail-row">
-                      <span class="detail-label">Total Nodes</span>
-                      <span class="detail-value">${dc.total_nodes}</span>
-                    </div>
-                    <div class="detail-row">
-                      <span class="detail-label">Node Providers</span>
-                      <span class="detail-value">${dc.node_providers}</span>
-                    </div>
-                    <div class="detail-row">
-                      <span class="detail-label">Subnets</span>
-                      <span class="detail-value">${dc.subnets ? dc.subnets.length : 0}</span>
-                    </div>
-                  </div>
-                </div>
-              `
-              } else {
-                return `
-                <div class="collapsed-item" data-index="${index}">
-                  <div class="collapsed-name">${dc.name}</div>
-                  <svg class="collapsed-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path>
-                  </svg>
-                </div>
-              `
-              }
-            })
-            .join("")
-        } else {
-          const dc = firstDC
-          bodyHtml = `
-            <div class="datacenter-item">
-              <div class="datacenter-header">
-                <div class="datacenter-name">${dc.name}</div>
-                <div class="expand-icon expanded">▼</div>
-              </div>
-              <div class="datacenter-details expanded">
-                <div class="detail-row">
-                  <span class="detail-label">Data Center ID</span>
-                  <span class="detail-value"><span class="detail-id">${dc.key}</span></span>
-                </div>
-                <div class="detail-row">
-                  <span class="detail-label">Data Center Owner</span>
-                  <span class="detail-value">${dc.owner}</span>
-                </div>
-                <div class="detail-row">
-                  <span class="detail-label">Replica Nodes</span>
-                  <span class="detail-value">${dc.total_replica_nodes || dc.total_nodes}</span>
-                </div>
-                <div class="detail-row">
-                  <span class="detail-label">API Boundary Nodes</span>
-                  <span class="detail-value">${dc.total_api_boundary_nodes || 0}</span>
-                </div>
-                <div class="detail-row">
-                  <span class="detail-label">Total Nodes</span>
-                  <span class="detail-value">${dc.total_nodes}</span>
-                </div>
-                <div class="detail-row">
-                  <span class="detail-label">Node Providers</span>
-                  <span class="detail-value">${dc.node_providers}</span>
-                </div>
-                <div class="detail-row">
-                  <span class="detail-label">Subnets</span>
-                  <span class="detail-value">${dc.subnets ? dc.subnets.length : 0}</span>
-                </div>
-              </div>
-            </div>
-          `
-        }
-
-        const fullHtml = `
-          <div class="popup-header">
-            <div class="popup-flag">${flagHtml}</div>
-            <div class="popup-region">${regionDisplay}</div>
-          </div>
-          <div class="popup-body">${bodyHtml}</div>
-        `
-
-        if (popupContent) {
-          popupContent.innerHTML = fullHtml
-          if (isMultiple) {
-            popupContent.querySelectorAll("[data-index]").forEach((el) => {
-              el.addEventListener("click", (e) => {
-                if (e && typeof e.stopPropagation === 'function') {
-                  e.stopPropagation()
-                }
-                const index = Number.parseInt(el.getAttribute("data-index") || "0")
-                toggleDataCenter(index)
-              })
-            })
-          }
-        }
-      }
-
-      function toggleDataCenter(index: number) {
-        if (index === currentExpandedIndex) return
-        currentExpandedIndex = index
-        renderPopupContent()
-      }
-
-      // Mouse movement tracking
-      if (!isMobile && !isTablet && !isMedium) {
-        document.addEventListener("mousemove", (e) => {
-          mouseX = e.clientX
-          mouseY = e.clientY
-
-          if (isVisible && popup.style.display === "block" && !popupPositioned) {
-            requestAnimationFrame(() => {
-              positionPopup()
-            })
-          }
-        })
-      } else {
-        document.addEventListener("mousemove", (e) => {
-          mouseX = e.clientX
-          mouseY = e.clientY
-        })
-      }
-
-      popup.addEventListener("mouseenter", () => {
-        isHoveringPopup = true
-        if (hideTimer) {
-          clearTimeout(hideTimer)
-          hideTimer = null
-        }
-        setCursor('default')
-      })
-
-      popup.addEventListener("mouseleave", () => {
-        isHoveringPopup = false
-        hidePopup()
-      })
-
-      if (containerRef.current && !isMobile && !isTablet && !isMedium) {
-        containerRef.current.addEventListener("mouseleave", () => {
-          if (isVisible && !isHoveringPopup) {
-            isHoveringDataCenter = false
-            hidePopup()
-          }
-        })
-      }
-
-      if (!isMobile && !isTablet && !isMedium) {
-        document.addEventListener("mousemove", (e) => {
-          if (isVisible && !isHoveringPopup) {
-            const popupRect = popup.getBoundingClientRect()
-            const isOverPopup = (
-              e.clientX >= popupRect.left &&
-              e.clientX <= popupRect.right &&
-              e.clientY >= popupRect.top &&
-              e.clientY <= popupRect.bottom
-            )
-
-            if (!isOverPopup && !isHoveringDataCenter) {
-              hidePopup()
-            }
-          }
-        })
-      }
-
-      window.addEventListener("resize", () => {
-        if (isVisible && popup.style.display === "block") {
-          popupPositioned = false
-          requestAnimationFrame(() => {
-            positionPopup()
-          })
-        }
-      })
-    }
+    }, [setupPopupFunctionality, setupWebGLContextHandlers, createSprites, isMedium, isMobile, isTablet])
 
     useEffect(() => {
       if (isInitialized.current) return
@@ -988,18 +1008,11 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
         spritesCache.current = []
         isRecovering.current = false
         contextLostCount.current = 0
+        popupFunctionsRef.current = null
 
         const popup = document.getElementById("earth-popup")
         if (popup && popup.parentNode) {
           popup.parentNode.removeChild(popup)
-        }
-
-        // Clean up global functions
-        if ((window as any).showPopup) {
-          delete (window as any).showPopup
-        }
-        if ((window as any).hidePopup) {
-          delete (window as any).hidePopup
         }
       }
     }, [initializeEarth])
