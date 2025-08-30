@@ -594,7 +594,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
           spritesCache.current.push(sprite)
           return true
         } catch (err) {
-          console.log("Failed to create or bind sprite for region", region, err)
+          //console.log("Failed to create or bind sprite for region", region, err)
           return false
         }
       }
@@ -943,7 +943,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
           // Setup popup functionality
           setupPopupFunctionality(popup)
 
-          await new Promise((r) => setTimeout(r, 2000))
+          await new Promise((r) => setTimeout(r, 8000))
 
 
 
