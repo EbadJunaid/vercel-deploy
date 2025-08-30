@@ -630,7 +630,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
             if (entry.attempts <= maxRetries) {
               failedQueue.push(entry)
             } else {
-              console.warn(`[EARTH] Giving up adding sprite for region "${entry.region}" after ${entry.attempts} attempts`)
+              console.log(`[EARTH] Giving up adding sprite for region "${entry.region}" after ${entry.attempts} attempts`)
             }
           }
         }
@@ -942,10 +942,6 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
 
           // Setup popup functionality
           setupPopupFunctionality(popup)
-
-          await new Promise((r) => setTimeout(r, 8000))
-
-
 
           // Load data centers and create sprites — await both fetch and sprite creation
           if (dataCentersData.current.length > 0) {
