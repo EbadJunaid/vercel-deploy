@@ -26,7 +26,6 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
     const earthInstanceRef = useRef<any>(null)
     const isInitialized = useRef(false)
     const spritesCache = useRef<any[]>([])
-    const isRecovering = useRef(false)
     const dataCentersData = useRef<any[]>([])
     const contextLostCount = useRef(0)
     const popupFunctionsRef = useRef<{
@@ -57,7 +56,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
       }
 
       // apply immediately if earth already exists
-      if (earthInstanceRef.current && !isRecovering.current) {
+      if (earthInstanceRef.current) {
         applyZoom(zoomState.current.current)
         if (earthInstanceRef.current.update) earthInstanceRef.current.update()
         if (earthInstanceRef.current.render) earthInstanceRef.current.render()
@@ -66,21 +65,21 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
 
     useImperativeHandle(ref, () => ({
       zoomIn: () => {
-        if (earthInstanceRef.current && !isRecovering.current) {
+        if (earthInstanceRef.current) {
           const newZoom = Math.min(zoomState.current.current + zoomState.current.step, zoomState.current.max)
           zoomState.current.current = newZoom
           applyZoom(newZoom)
         }
       },
       zoomOut: () => {
-        if (earthInstanceRef.current && !isRecovering.current) {
+        if (earthInstanceRef.current) {
           const newZoom = Math.max(zoomState.current.current - zoomState.current.step, zoomState.current.min)
           zoomState.current.current = newZoom
           applyZoom(newZoom)
         }
       },
       resetZoom: () => {
-        if (earthInstanceRef.current && !isRecovering.current) {
+        if (earthInstanceRef.current) {
           zoomState.current.current = 1.1
           applyZoom(1.1)
         }
@@ -89,7 +88,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
     }))
 
     const applyZoom = (zoomLevel: number) => {
-      if (earthInstanceRef.current && earthInstanceRef.current.camera && !isRecovering.current) {
+      if (earthInstanceRef.current && earthInstanceRef.current.camera) {
         const baseDistance = 24
         const newDistance = baseDistance / zoomLevel
 
@@ -120,7 +119,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
     }
 
     const disableEarthInteraction = () => {
-      if (earthInstanceRef.current && !isRecovering.current) {
+      if (earthInstanceRef.current) {
         earthInstanceRef.current.autoRotate = false
 
         if (earthInstanceRef.current.orbit) {
@@ -130,7 +129,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
     }
 
     const enableEarthInteraction = () => {
-      if (earthInstanceRef.current && !isRecovering.current) {
+      if (earthInstanceRef.current) {
         earthInstanceRef.current.autoRotate = true
 
         if (earthInstanceRef.current.orbit) {
@@ -194,7 +193,6 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
       canvas.addEventListener("webglcontextlost", (ev: Event) => {
         // Do not preventDefault to avoid waiting for a restore that may not happen
         console.error("[EARTH] WebGL context lost event", ev)
-        console.log("shit issue has come ");
         // Hide any visible popups
         const popup = document.getElementById("earth-popup")
         if (popup) {
@@ -202,22 +200,14 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
           popup.classList.remove("visible")
         }
 
-        console.log("coming out of the function");
         // Immediately attempt recovery since restore may not fire
         setTimeout(() => {
           recoverWebGLContext()
         }, 100)
       })
 
-      canvas.addEventListener("webglcontextrestored", () => {
-        console.log("in restore func");
-        console.info("[EARTH] WebGL context restored")
-        // Attempt to recover
-        setTimeout(() => {
-          recoverWebGLContext()
-        }, 100)
-      })
-    }, [])
+      // Intentionally NOT listening for "webglcontextrestored" — we will re-initialize ourselves on "lost".
+    }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
     const loadEarthScript = () => {
       if ((window as any).Earth) {
@@ -270,8 +260,6 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
       }
 
       function showPopup(region: string, group: any[]) {
-        if (isRecovering.current) return
-        
         if (hideTimer) {
           clearTimeout(hideTimer)
           hideTimer = null
@@ -289,7 +277,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
       }
 
       function hidePopup() {
-        if (hideTimer || isRecovering.current) return
+        if (hideTimer) return
         hideTimer = setTimeout(() => {
           isVisible = false
           popup.style.display = "none"
@@ -523,9 +511,8 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
       return { showPopup, hidePopup }
     }, [isMobile, isTablet, isMedium])
 
-    const createSprites = useCallback((earth: any, centers: any[]) => {
+    const createSprites = useCallback(async (earth: any, centers: any[]) => {
       if (!earth || !centers || centers.length === 0 || !popupFunctionsRef.current) return
-      console.log("in sprite function man");
       const { showPopup, hidePopup } = popupFunctionsRef.current
 
       const regionMap: { [key: string]: any[] } = {}
@@ -534,129 +521,131 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
       })
 
       const regions = Object.keys(regionMap)
-      let currentIndex = 0
+      if (regions.length === 0) return
 
-      const createSpriteBatch = () => {
-        console.log("recovering value now ",isRecovering.current);
-        if (isRecovering.current) return // Don't create sprites during recovery
+      const batchSize = 5
+      const batchDelayMs = 100
+      const maxRetries = 3
 
-        const batchSize = 5 // Increased batch size for better performance
-        const endIndex = Math.min(currentIndex + batchSize, regions.length)
+      type FailedEntry = { region: string; attempts: number }
 
-        console.log("in batch sprite now");
-        for (let i = currentIndex; i < endIndex; i++) {
-          const region = regions[i]
-          const group = regionMap[region]
-          const first = group && group[0]
-          const isMultiple = group && group.length > 1
-          const imageFile = isMultiple ? "real-multiple.svg" : "real-single.svg"
+      const failedQueue: FailedEntry[] = []
 
-          // Safety checks
-          const hasValidGroup = Array.isArray(group) && group.length > 0
-          const lat = first?.latitude
-          const lng = first?.longitude
-          const hasValidLatLng = typeof lat === "number" && isFinite(lat) && !Number.isNaN(lat) &&
-                                 typeof lng === "number" && isFinite(lng) && !Number.isNaN(lng)
-          const hasValidImage = typeof imageFile === "string" && imageFile.length > 0
-          const earthAvailable = earth && typeof earth.addSprite === "function"
+      // helper to attempt adding a single region sprite
+      const tryAddRegion = (region: string) => {
+        const group = regionMap[region]
+        const first = group && group[0]
+        const isMultiple = group && group.length > 1
+        const imageFile = isMultiple ? "real-multiple.svg" : "real-single.svg"
 
-          if (!hasValidGroup || !hasValidLatLng || !hasValidImage || !earthAvailable) {
-            console.warn(`Skipping region "${region}" - invalid data or earth not ready`, { first })
-            continue
-          }
+        const hasValidGroup = Array.isArray(group) && group.length > 0
+        const lat = first?.latitude
+        const lng = first?.longitude
+        const hasValidLatLng = typeof lat === "number" && isFinite(lat) && !Number.isNaN(lat) &&
+          typeof lng === "number" && isFinite(lng) && !Number.isNaN(lng)
+        const hasValidImage = typeof imageFile === "string" && imageFile.length > 0
+        const earthAvailable = earth && typeof earth.addSprite === "function"
 
-          try {
-            const sprite = earth.addSprite({
-              image: imageFile,
-              location: { lat: first.latitude, lng: first.longitude },
-              scale: 0.3, // Slightly reduced scale for better performance
-              opacity: 1,
-              hotspot: true,
-              imageResolution: 32, // Reduced from 64 for better performance
-            })
-
-            if (!sprite) {
-              continue
-            }
-
-            // Store event handlers for proper cleanup
-            const handleMouseOver = () => {
-              if (isMobile || isTablet || isRecovering.current) return
-              setCursor('default')
-              showPopup(region, group)
-            }
-
-            const handleMouseOut = () => {
-              if (isMobile || isTablet || isRecovering.current) return
-              hidePopup()
-            }
-
-            const handleClick = (e: Event) => {
-              if (isRecovering.current) return
-              if (e && typeof e.preventDefault === 'function') {
-                e.preventDefault()
-              }
-              if ((isMobile || isTablet) && !isMedium && onMobileDataCenterClick) {
-                onMobileDataCenterClick(first)
-              }
-            }
-
-            sprite.addEventListener("mouseover", handleMouseOver)
-            sprite.addEventListener("mouseout", handleMouseOut)
-            sprite.addEventListener("click", handleClick)
-
-            spritesCache.current.push(sprite)
-          } catch (err) {
-            console.log("Failed to create or bind sprite for region", region, err)
-            continue
-          }
+        if (!hasValidGroup || !hasValidLatLng || !hasValidImage || !earthAvailable) {
+          console.warn(`Skipping region "${region}" - invalid data or earth not ready`, { first })
+          return false
         }
 
-        currentIndex = endIndex
+        try {
+          const sprite = earth.addSprite({
+            image: imageFile,
+            location: { lat: first.latitude, lng: first.longitude },
+            scale: 0.3,
+            opacity: 1,
+            hotspot: true,
+            imageResolution: 32,
+          })
 
-        if (currentIndex < regions.length && !isRecovering.current) {
-          setTimeout(createSpriteBatch, 100) // Slightly increased delay
+          if (!sprite) {
+            // mark as failed to retry
+            return false
+          }
+
+          // Store event handlers for proper cleanup
+          const handleMouseOver = () => {
+            if (isMobile || isTablet) return
+            setCursor('default')
+            showPopup(region, group)
+          }
+
+          const handleMouseOut = () => {
+            if (isMobile || isTablet) return
+            hidePopup()
+          }
+
+          const handleClick = (e: Event) => {
+            if (e && typeof e.preventDefault === 'function') {
+              e.preventDefault()
+            }
+            if ((isMobile || isTablet) && !isMedium && onMobileDataCenterClick) {
+              onMobileDataCenterClick(first)
+            }
+          }
+
+          sprite.addEventListener("mouseover", handleMouseOver)
+          sprite.addEventListener("mouseout", handleMouseOut)
+          sprite.addEventListener("click", handleClick)
+
+          spritesCache.current.push(sprite)
+          return true
+        } catch (err) {
+          console.log("Failed to create or bind sprite for region", region, err)
+          return false
         }
       }
 
-      console.log("now it's time to go in sprite batch");
-      createSpriteBatch()
+      // initial batched pass
+      let idx = 0
+      while (idx < regions.length) {
+        const end = Math.min(idx + batchSize, regions.length)
+        for (let i = idx; i < end; i++) {
+          const region = regions[i]
+          const ok = tryAddRegion(region)
+          if (!ok) {
+            failedQueue.push({ region, attempts: 1 })
+          }
+        }
+        idx = end
+        if (idx < regions.length) {
+          await new Promise((r) => setTimeout(r, batchDelayMs))
+        }
+      }
+
+      // retry loop for failed sprites
+      let retryRound = 1
+      while (failedQueue.length > 0 && retryRound <= maxRetries) {
+        const currentFailed = failedQueue.splice(0, failedQueue.length) // take all
+        // small wait before retrying
+        await new Promise((r) => setTimeout(r, 200 * retryRound))
+
+        for (const entry of currentFailed) {
+          const ok = tryAddRegion(entry.region)
+          if (!ok) {
+            entry.attempts = (entry.attempts || 0) + 1
+            if (entry.attempts <= maxRetries) {
+              failedQueue.push(entry)
+            } else {
+              console.warn(`[EARTH] Giving up adding sprite for region "${entry.region}" after ${entry.attempts} attempts`)
+            }
+          }
+        }
+
+        retryRound++
+      }
+
+      if (failedQueue.length > 0) {
+        console.warn("[EARTH] Some sprites could not be added after retries:", failedQueue.map(f => f.region))
+      } else {
+        console.info("[EARTH] All sprites added (or skipped safely) — sprite creation complete.")
+      }
     }, [isMobile, isTablet, isMedium, onMobileDataCenterClick])
 
-    // WebGL context recovery function
-    const recoverWebGLContext = useCallback(async () => {
-      if (isRecovering.current || contextLostCount.current >= maxRecoveryAttempts) {
-        console.warn("[EARTH] Max recovery attempts reached or already recovering")
-        return
-      }
-
-      isRecovering.current = true
-      contextLostCount.current++
-      console.info(`[EARTH] Attempting WebGL context recovery (attempt ${contextLostCount.current})`)
-
-      try {
-        // Skip destroying the instance since context is already lost and destroy fails
-        // Instead, just nullify and proceed to recreate
-        earthInstanceRef.current = null
-
-        // Clear sprites cache
-        spritesCache.current = []
-
-        // // Wait a bit before recreating
-        // await new Promise(resolve => setTimeout(resolve, 2000))
-        isRecovering.current = false
-
-        // Recreate the earth instance
-        await initializeEarth()
-        
-        console.info("[EARTH] WebGL context recovery successful")
-      } catch (error) {
-        console.error("[EARTH] WebGL context recovery failed:", error)
-      } finally {
-        isRecovering.current = false
-      }
-    }, [])
-
+    // --- MOVED initializeEarth ABOVE recoverWebGLContext to avoid TDZ errors ---
     const initializeEarth = useCallback(async () => {
       if (!containerRef.current) return
 
@@ -906,7 +895,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
 
           const earth = new (window as any).Earth("earth-container", {
             mapImage: "real-hologram.svg",
-            quality: 3, // Reduced from 3 for better performance
+            quality: 3,
             light: "none",
             autoRotate: true,
             autoRotateDelay: 100,
@@ -934,8 +923,6 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
 
           // Apply initial zoom according to device type / medium
           setTimeout(() => {
-            if (isRecovering.current) return
-
             if (isMedium) {
               zoomState.current.current = 1
               applyZoom(1)
@@ -956,28 +943,65 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
           // Setup popup functionality
           setupPopupFunctionality(popup)
 
-          // Load data centers and create sprites
+          // Load data centers and create sprites — await both fetch and sprite creation
           if (dataCentersData.current.length > 0) {
             // Use cached data
             console.log("using cached data");
-            createSprites(earth, dataCentersData.current)
+            await createSprites(earth, dataCentersData.current)
           } else {
-            // Fetch data
-            fetch("https://ic-api.internetcomputer.org/api/v3/data-centers")
-              .then((res) => res.json())
-              .then((data) => {
-                const centers = data.data_centers.filter((dc: any) => dc.total_nodes > 0)
-                dataCentersData.current = centers
-                createSprites(earth, centers)
-              })
-              .catch(console.error)
+            // Fetch data (awaited)
+            try {
+              const res = await fetch("https://ic-api.internetcomputer.org/api/v3/data-centers")
+              const data = await res.json()
+              const centers = data.data_centers.filter((dc: any) => dc.total_nodes > 0)
+              dataCentersData.current = centers
+              await createSprites(earth, centers)
+            } catch (err) {
+              console.error("[EARTH] Failed to fetch data centers:", err)
+              throw err
+            }
           }
         }
       } catch (error) {
         console.error("Error initializing Earth:", error)
-        isRecovering.current = false
       }
     }, [setupPopupFunctionality, setupWebGLContextHandlers, createSprites, isMedium, isMobile, isTablet])
+
+    // WebGL context recovery function (no isRecovering flag — reinitialize immediately)
+    const recoverWebGLContext = useCallback(async () => {
+      if (contextLostCount.current >= maxRecoveryAttempts) {
+        console.warn("[EARTH] Max recovery attempts reached")
+        return
+      }
+
+      contextLostCount.current++
+      console.info(`[EARTH] Attempting WebGL context recovery (attempt ${contextLostCount.current})`)
+
+      try {
+        // Nullify current instance and clear caches so initializeEarth starts clean
+        try {
+          // attempt destroy if available (may throw because context is lost)
+          if (earthInstanceRef.current?.destroy) {
+            earthInstanceRef.current.destroy()
+          }
+        } catch (e) {
+          // ignore destroy errors
+        }
+
+        earthInstanceRef.current = null
+        spritesCache.current = []
+
+        // Wait a small moment (helps some browsers recover resources)
+        await new Promise((r) => setTimeout(r, 200))
+
+        // Recreate the earth instance and await until sprites & fetches finish
+        await initializeEarth()
+
+        console.info("[EARTH] WebGL context recovery successful")
+      } catch (error) {
+        console.error("[EARTH] WebGL context recovery failed:", error)
+      }
+    }, [initializeEarth])
 
     useEffect(() => {
       if (isInitialized.current) return
@@ -992,6 +1016,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
         console.error("[EARTH] unhandledrejection:", e)
       })
 
+      // initialize once
       initializeEarth()
       isInitialized.current = true
 
@@ -1006,7 +1031,6 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
         }
 
         spritesCache.current = []
-        isRecovering.current = false
         contextLostCount.current = 0
         popupFunctionsRef.current = null
 
