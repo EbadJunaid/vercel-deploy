@@ -206,9 +206,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
         // Immediately attempt recovery since restore may not fire
         setTimeout(() => {
           recoverWebGLContext()
-        }, 5000)
-
-        console.log("strating recovery");
+        }, 100)
       })
 
       canvas.addEventListener("webglcontextrestored", () => {
@@ -634,17 +632,9 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
       console.info(`[EARTH] Attempting WebGL context recovery (attempt ${contextLostCount.current})`)
 
       try {
-        // Clear existing instance
-        if (earthInstanceRef.current) {
-          try {
-            if (earthInstanceRef.current.destroy) {
-              earthInstanceRef.current.destroy()
-            }
-          } catch (err) {
-            console.warn("[EARTH] Error destroying earth instance during recovery:", err)
-          }
-          earthInstanceRef.current = null
-        }
+        // Skip destroying the instance since context is already lost and destroy fails
+        // Instead, just nullify and proceed to recreate
+        earthInstanceRef.current = null
 
         // Clear sprites cache
         spritesCache.current = []
