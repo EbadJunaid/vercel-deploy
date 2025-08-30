@@ -642,8 +642,8 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
         // Clear sprites cache
         spritesCache.current = []
 
-        // Wait a bit before recreating
-        await new Promise(resolve => setTimeout(resolve, 2000))
+        // // Wait a bit before recreating
+        // await new Promise(resolve => setTimeout(resolve, 2000))
         isRecovering.current = false
 
         // Recreate the earth instance
@@ -906,7 +906,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
 
           const earth = new (window as any).Earth("earth-container", {
             mapImage: "real-hologram.svg",
-            quality: 4, // Reduced from 3 for better performance
+            quality: 3, // Reduced from 3 for better performance
             light: "none",
             autoRotate: true,
             autoRotateDelay: 100,
