@@ -67,7 +67,7 @@ export default function Dashboard() {
   
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 overflow-x-hidden">
-      <div className="bg-[#1d0e35] xl:h-[110vh] md:h-full sm:h-full flex flex-col justify-between relative">
+      <div className="bg-[#1d0e35] xl:h-[120vh] md:h-full sm:h-full flex flex-col justify-between relative">
         <div className="absolute top-0 left-0 w-full z-20">
           <Header />
         </div>
@@ -79,10 +79,8 @@ export default function Dashboard() {
             <div className="h-full relative flex relative items-start justify-start overflow-hidden z-0 "> 
               <div
                 className="
-                xl:absolute xl:1 xl:right-90
-
+                xl:absolute xl:1 
                 xl: w-full xl:h-full
-                
                 "
               >
 

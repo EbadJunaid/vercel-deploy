@@ -32,7 +32,12 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
       showPopup: (region: string, group: any[]) => void
       hidePopup: () => void
     } | null>(null)
+    const isOverHotspot = useRef(false)
     const maxRecoveryAttempts = 3
+    const earthWidthRef = useRef(0)
+    const earthHeightRef = useRef(0)
+    const shiftAmountRef = useRef(0)
+    const interactiveFraction = useRef(1.0)
 
     // base zoomState; will be kept in sync with props via effect
     const zoomState = useRef({
@@ -62,6 +67,24 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
         if (earthInstanceRef.current.render) earthInstanceRef.current.render()
       }
     }, [isMobile, isTablet, isMedium])
+
+    // Update shift on prop changes
+    useEffect(() => {
+      if (earthInstanceRef.current && earthWidthRef.current > 0) {
+        shiftAmountRef.current = (!isMobile && !isMedium) ? earthWidthRef.current / 4 : 0
+        earthInstanceRef.current.camera.setViewOffset(
+          earthWidthRef.current,
+          earthHeightRef.current,
+          shiftAmountRef.current,
+          0,
+          earthWidthRef.current,
+          earthHeightRef.current
+        )
+        applyZoom(zoomState.current.current)
+        earthInstanceRef.current.update()
+        earthInstanceRef.current.render()
+      }
+    }, [isMobile, isMedium])
 
     useImperativeHandle(ref, () => ({
       zoomIn: () => {
@@ -114,6 +137,18 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
         }
         if (earthInstanceRef.current.render) {
           earthInstanceRef.current.render()
+        }
+
+        // Update interactive fraction based on zoom
+        if (shiftAmountRef.current > 0 && earthWidthRef.current > 0) {
+          const baseFraction = 1 - (shiftAmountRef.current / earthWidthRef.current)
+          const normalized = (zoomLevel - zoomState.current.min) / (zoomState.current.max - zoomState.current.min)
+          let fraction = baseFraction + (1 - baseFraction) * normalized
+          const buffer = 0.05 // 5% buffer for surrounding area
+          fraction = Math.min(1, fraction + buffer)
+          interactiveFraction.current = fraction
+        } else {
+          interactiveFraction.current = 1.0
         }
       }
     }
@@ -569,12 +604,15 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
           // Store event handlers for proper cleanup
           const handleMouseOver = () => {
             if (isMobile || isTablet) return
-            setCursor('default')
+            setCursor('pointer')
+            isOverHotspot.current = true
             showPopup(region, group)
           }
 
           const handleMouseOut = () => {
             if (isMobile || isTablet) return
+            isOverHotspot.current = false
+            setCursor('grab')
             hidePopup()
           }
 
@@ -660,8 +698,9 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
 
         const earthDiv = document.createElement("div")
         earthDiv.id = "earth-container"
+        // earthDiv.style.backgroundColor = "lightblue";
         earthDiv.style.width = "100%"
-        earthDiv.style.height = "100%"
+        earthDiv.style.height = "120%"
         earthDiv.style.position = "relative"
 
         // Create or reuse popup
@@ -890,8 +929,9 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
         }
 
         if ((window as any).Earth) {
-          const earthWidth = containerRef.current?.offsetWidth || window.innerWidth * 0.5
-          const earthHeight = containerRef.current?.offsetHeight || window.innerHeight * 0.5
+          earthWidthRef.current = containerRef.current?.offsetWidth || window.innerWidth * 0.02
+          console.log("earth width", earthWidthRef.current);
+          earthHeightRef.current = containerRef.current?.offsetHeight || window.innerHeight * 0.5
 
           const earth = new (window as any).Earth("earth-container", {
             mapImage: "real-hologram.svg",
@@ -902,24 +942,65 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
             autoRotateSpeed: 1.2,
             autoRotateStart: 0,
             transparent: true,
-            width: earthWidth,
-            height: earthHeight,
+            width: earthWidthRef.current,
+            height: earthHeightRef.current,
             enableUpdate: true,
             enableOcclusion: false,
-            enableShadow: false
+            enableShadow: false,
+            zoomMax: 1e9,
           })
 
           earthInstanceRef.current = earth
           console.info("[EARTH] Earth instance created", { earth })
+
+          // Conditional shift for big screens and tablets (positive xOffset shifts scene left)
+          shiftAmountRef.current = (!isMobile && !isMedium) ? earthWidthRef.current / 4 : 0
+          earth.camera.setViewOffset(earthWidthRef.current, earthHeightRef.current, shiftAmountRef.current, 0, earthWidthRef.current, earthHeightRef.current);
+          earth.camera.updateProjectionMatrix(); // Ensure the projection updates
+          earth.update(); // Force a re-render
 
           // Setup WebGL context handlers
           const canvas = document.querySelector("#earth-container canvas") as HTMLCanvasElement
           if (canvas) {
             console.info("[EARTH] found canvas element", canvas)
             setupWebGLContextHandlers(canvas)
-          }
 
-          setCursor('grab')
+            // Dynamic cursor based on mouse position and hotspot hover
+            canvas.addEventListener('mousemove', (e) => {
+              const rect = canvas.getBoundingClientRect()
+              const mouseX = e.clientX - rect.left
+              if (isOverHotspot.current) {
+                setCursor('pointer')
+              } else if (mouseX < rect.width * interactiveFraction.current) {
+                setCursor('grab')
+              } else {
+                setCursor('default')
+              }
+            })
+
+            // Prevent interaction (drag/start) in non-interactive area
+            canvas.addEventListener('mousedown', (e) => {
+              const rect = canvas.getBoundingClientRect()
+              const mouseX = e.clientX - rect.left
+              if (mouseX > rect.width * interactiveFraction.current) {
+                e.preventDefault()
+                e.stopPropagation()
+              }
+            }, true)
+
+            // Same for touch
+            canvas.addEventListener('touchstart', (e) => {
+              if (e.touches.length > 0) {
+                const touch = e.touches[0]
+                const rect = canvas.getBoundingClientRect()
+                const mouseX = touch.clientX - rect.left
+                if (mouseX > rect.width * interactiveFraction.current) {
+                  e.preventDefault()
+                  e.stopPropagation()
+                }
+              }
+            }, true)
+          }
 
           // Apply initial zoom according to device type / medium
           setTimeout(() => {
@@ -1022,7 +1103,35 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
       initializeEarth()
       isInitialized.current = true
 
+      const handleResize = () => {
+        if (!containerRef.current || !earthInstanceRef.current) return
+
+        const newWidth = containerRef.current.offsetWidth
+        const newHeight = containerRef.current.offsetHeight
+
+        earthWidthRef.current = newWidth
+        earthHeightRef.current = newHeight
+
+        // Update shift based on current props
+        shiftAmountRef.current = (!isMobile && !isMedium) ? newWidth / 4 : 0
+
+        // Update Earth dimensions (assuming renderer and camera are accessible)
+        if (earthInstanceRef.current.renderer) {
+          earthInstanceRef.current.renderer.setSize(newWidth, newHeight)
+        }
+        earthInstanceRef.current.camera.aspect = newWidth / newHeight
+        earthInstanceRef.current.camera.setViewOffset(newWidth, newHeight, shiftAmountRef.current, 0, newWidth, newHeight)
+        earthInstanceRef.current.camera.updateProjectionMatrix()
+
+        applyZoom(zoomState.current.current)
+        earthInstanceRef.current.update()
+        earthInstanceRef.current.render()
+      }
+
+      window.addEventListener('resize', handleResize)
+
       return () => {
+        window.removeEventListener('resize', handleResize)
         // Cleanup
         try {
           if (earthInstanceRef.current?.destroy) {
@@ -1041,14 +1150,14 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
           popup.parentNode.removeChild(popup)
         }
       }
-    }, [initializeEarth])
+    }, [initializeEarth, isMobile, isMedium])
 
     return (
       <div
         ref={containerRef}
         style={{
           width: "100%",
-          height: "100%",
+          height: "110%",
           minHeight: "400px",
           cursor: "default"
         }}
