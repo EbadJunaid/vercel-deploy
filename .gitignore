@@ -49,10 +49,13 @@ API-testing.py
 API-keys.txt
 src/Future-work.txt
 
+src/components/tempcomponent.tsx
+
 ars.txt
 #Don't use components
 
 src/components/Not-used-components
+
 
 #Don't add below folders
 
