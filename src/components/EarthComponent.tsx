@@ -54,7 +54,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
     useEffect(() => {
       const initial = isMedium ? 1 : 1.3
       const min = isMedium ? 1 : 1.3
-      const max = isMobile ? 1.6 : isTablet ? 1.5 : isMedium ? 1.4 : 2.0
+      const max = isMobile ? 1.6 : isTablet ? 1.5 : isMedium ? 1.4 : 1.6
 
       zoomState.current = {
         current: initial,
@@ -81,6 +81,9 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
         if (earthInstanceRef.current) {
           const tempZoom = zoomState.current.current + zoomState.current.step
           const newZoom = Math.min(Math.round(tempZoom * 10) / 10, zoomState.current.max)
+          console.log("current zoom",zoomState.current.current)
+          console.log("new zoom",newZoom)
+          if (newZoom === zoomState.current.current) return // Skip if already at max
           zoomState.current.current = newZoom
           // Adjust width only on big screens (not mobile, tablet, or medium)
           if (!isMobile && !isTablet && !isMedium) {
@@ -95,6 +98,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
         if (earthInstanceRef.current) {
           const tempZoom = zoomState.current.current - zoomState.current.step
           const newZoom = Math.max(Math.round(tempZoom * 10) / 10, zoomState.current.min)
+          if (newZoom === zoomState.current.current) return // Skip if already at min
           zoomState.current.current = newZoom
           // Adjust width only on big screens (not mobile, tablet, or medium)
           if (!isMobile && !isTablet && !isMedium) {
@@ -142,6 +146,8 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
           earthInstanceRef.current.orbit.update()
         }
 
+        updateSprites() // Update sprite scales after zoom changes
+
         if (earthInstanceRef.current.update) {
           earthInstanceRef.current.update()
         }
@@ -179,6 +185,17 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
       }
     }
 
+    // Function to update sprite scales dynamically with zoom (to maintain consistent hover/hotspot size)
+    const updateSprites = () => {
+      const baseScale = 0.3
+      const scaleFactor = zoomState.current.current / zoomState.current.min // Increase scale at higher zoom
+      spritesCache.current.forEach((sprite) => {
+        if (sprite) {
+          sprite.scale = baseScale * scaleFactor
+        }
+      })
+    }
+
     // Function to apply camera view offset for big screens (shift earth to left)
     const applyOffset = () => {
       if (earthInstanceRef.current && earthInstanceRef.current.camera) {
@@ -186,7 +203,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
         if (isBigScreen) {
           const fullWidth = earthInstanceRef.current.width
           const fullHeight = earthInstanceRef.current.height
-          const offsetX = (fullWidth / 6) * zoomState.current.current // Adjusted to multiply by zoom for consistent world-space shift
+          const offsetX = fullWidth / 6 // Fixed screen ratio shift
           const offsetY = 0
           const viewWidth = fullWidth
           const viewHeight = fullHeight
@@ -277,8 +294,9 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
     }
 
     const setCursor = (type: 'default' | 'pointer' | 'grab') => {
-      if (containerRef.current) {
-        containerRef.current.style.cursor = type
+      const earthContainer = document.getElementById("earth-container")
+      if (earthContainer) {
+        earthContainer.style.cursor = type
       }
     }
 
@@ -757,7 +775,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
         earthDiv.style.width = `${initialWidthPercent}%`
         earthDiv.style.height = "119%"
         earthDiv.style.position = "relative"
-        //earthDiv.style.background = "lightblue"
+        // earthDiv.style.background = "lightblue"
 
         // Create or reuse popup
         let popup = document.getElementById("earth-popup")
@@ -985,8 +1003,9 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
         }
 
         if ((window as any).Earth) {
-          const earthWidth = (containerRef.current?.offsetWidth * (initialWidthPercent / 100)) || (window.innerWidth * 0.5 * (initialWidthPercent / 100))
-          const earthHeight = containerRef.current?.offsetHeight || window.innerHeight * 0.5
+          // Calculate after append
+          const earthWidth = earthDiv.offsetWidth || (window.innerWidth * (initialWidthPercent / 100))
+          const earthHeight = earthDiv.offsetHeight || window.innerHeight * 0.5
 
           const earth = new (window as any).Earth("earth-container", {
             mapImage: "real-hologram.svg",
@@ -1007,12 +1026,20 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
           earthInstanceRef.current = earth
           console.info("[EARTH] Earth instance created", { earth })
 
+          // Adjust camera near plane to prevent clipping at close zoom
+          if (earth.camera) {
+            earth.camera.near = 0.1
+            earth.camera.updateProjectionMatrix()
+          }
+
           // Setup WebGL context handlers
           const canvas = document.querySelector("#earth-container canvas") as HTMLCanvasElement
           if (canvas) {
             console.info("[EARTH] found canvas element", canvas)
             setupWebGLContextHandlers(canvas)
           }
+
+          setCursor('grab')
 
           // Apply initial zoom according to device type / medium
           let initialZoom = 1.3
@@ -1054,6 +1081,13 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
               throw err
             }
           }
+
+          // After sprites, reapply to ensure
+          applyZoom(zoomState.current.current)
+          applyWidth()
+          applyOffset()
+          if (earthInstanceRef.current.update) earthInstanceRef.current.update()
+          if (earthInstanceRef.current.render) earthInstanceRef.current.render()
         }
       } catch (error) {
         console.error("Error initializing Earth:", error)
