@@ -38,21 +38,21 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
     const zoomState = useRef({
       current: 1.3,
       min: 1.3,
-      max: 1.9,
-      step: 0.2
+      max: 1.8,
+      step: 0.1
     })
 
     // keep zoom state in sync with breakpoint props (isMobile/isTablet/isMedium)
     useEffect(() => {
       const initial = isMedium ? 1 : 1.3
       const min = isMedium ? 1 : 1.3
-      const max = isMobile ? 1.6 : isTablet ? 1.8 : isMedium ? 1.4 : 1.9
+      const max = isMobile ? 1.6 : isTablet ? 1.8 : isMedium ? 1.4 : 1.8
 
       zoomState.current = {
         current: initial,
         min,
         max,
-        step: 0.2
+        step: 0.1
       }
 
       // apply immediately if earth already exists
@@ -81,7 +81,7 @@ export const EarthComponent = forwardRef<EarthComponentRef, EarthComponentProps>
       resetZoom: () => {
         if (earthInstanceRef.current) {
           zoomState.current.current = 1.1
-          applyZoom(1.1)
+          applyZoom(1.3)
         }
       },
       getCurrentZoom: () => zoomState.current.current,

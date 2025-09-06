@@ -79,10 +79,9 @@ export default function Dashboard() {
             <div className="h-full relative flex relative items-start justify-start overflow-hidden z-0 "> 
               <div
                 className="
-                xl:absolute xl:1 xl:right-90
+                xl:absolute xl:1 xl:right-75
 
-                xl: w-full xl:h-full
-                
+                xl: w-full xl:h-full                
                 "
               >
 
